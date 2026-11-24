@@ -313,3 +313,16 @@ fun rememberCoverTint(thumb: String?, fallback: Color = Color(0xFF14211F), darke
     }
     return c
 }
+
+/** Uygulama simgesi + "Nağme" yazısı (logo B) */
+@Composable
+fun Logo(iconSize: Dp = 36.dp, textSize: Int = 27, modifier: Modifier = Modifier) {
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        androidx.compose.foundation.Image(
+            painterResource(R.drawable.app_icon), contentDescription = null,
+            modifier = Modifier.size(iconSize).clip(RoundedCornerShape(iconSize * 0.27f))
+        )
+        Spacer(Modifier.width(iconSize * 0.3f))
+        Text("Nağme", fontFamily = LogoFont, fontSize = androidx.compose.ui.unit.TextUnit(textSize.toFloat(), androidx.compose.ui.unit.TextUnitType.Sp), color = Brand)
+    }
+}

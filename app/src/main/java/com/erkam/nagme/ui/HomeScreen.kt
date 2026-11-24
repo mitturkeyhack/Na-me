@@ -61,12 +61,7 @@ fun HomeScreen(vm: MainViewModel, bottomPad: PaddingValues) {
                     Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 14.dp, bottom = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Box(
-                        Modifier.size(34.dp).clip(RoundedCornerShape(10.dp)).background(C.Accent),
-                        contentAlignment = Alignment.Center
-                    ) { Ic(R.drawable.ic_note, null, tint = C.OnAccent, size = 20.dp) }
-                    Spacer(Modifier.width(10.dp))
-                    Text("Nağme", fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    Logo(modifier = Modifier.weight(1f))
                     IconBtn(R.drawable.ic_search, "Ara", { vm.tab.value = Tab.Search })
                     Avatar { vm.showSettings.value = true }
                 }

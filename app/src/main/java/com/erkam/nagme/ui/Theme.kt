@@ -10,7 +10,10 @@ import androidx.compose.runtime.mutableStateOf
 import com.erkam.nagme.data.Store
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import com.erkam.nagme.R
 import androidx.compose.ui.unit.sp
 
 /** Seçilebilir tema renkleri */
@@ -38,6 +41,10 @@ object C {
 }
 
 fun coverColor(key: String) = C.Covers[(key.hashCode() and 0x7fffffff) % C.Covers.size]
+
+/** Nağme logosu: klasik zarif yazı (DM Serif Display) ve marka sarısı */
+val LogoFont = FontFamily(Font(R.font.dm_serif_display))
+val Brand = Color(0xFFF5B14C)
 
 object T {
     val H1 = TextStyle(fontSize = 26.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.4).sp)

@@ -204,9 +204,10 @@ fun SummaryScreen(vm: MainViewModel) {
                 }
             }
             Row(Modifier.fillMaxWidth().padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(28.dp).clip(RoundedCornerShape(8.dp)).background(Ink), contentAlignment = Alignment.Center) {
-                    Ic(R.drawable.ic_note, null, tint = C.Accent, size = 16.dp)
-                }
+                androidx.compose.foundation.Image(
+                    androidx.compose.ui.res.painterResource(R.drawable.app_icon), null,
+                    Modifier.size(28.dp).clip(RoundedCornerShape(8.dp))
+                )
                 Spacer(Modifier.width(8.dp))
                 Text("Nağme Özetim", color = Ink, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 Spacer(Modifier.width(10.dp))

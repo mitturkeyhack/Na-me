@@ -178,15 +178,8 @@ fun SettingsScreen(vm: MainViewModel) {
                 .background(C.Surface).padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(44.dp).clip(RoundedCornerShape(12.dp)).background(C.Accent), contentAlignment = Alignment.Center) {
-                    Ic(R.drawable.ic_note, null, tint = C.OnAccent, size = 24.dp)
-                }
-                Column(Modifier.padding(start = 12.dp)) {
-                    Text("Nağme", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                    Text("Sürüm $versionName", style = T.Small, color = C.Muted)
-                }
-            }
+            Logo(iconSize = 52.dp, textSize = 30)
+            Text("Sürüm $versionName", style = T.Small, color = C.Muted)
             Info2("Yayıncı", "Erkam Yazılım")
             Info2("Geliştirici", "Sadullah Akça")
             Text(

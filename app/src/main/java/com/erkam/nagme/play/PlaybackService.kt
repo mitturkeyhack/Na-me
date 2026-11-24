@@ -147,7 +147,7 @@ class PlaybackService : MediaSessionService() {
             .build()
 
         setMediaNotificationProvider(
-            DefaultMediaNotificationProvider.Builder(this).build().apply { setSmallIcon(R.drawable.ic_note) }
+            DefaultMediaNotificationProvider.Builder(this).build().apply { setSmallIcon(R.drawable.ic_stat_ney) }
         )
 
         bubble = Bubble(this, player)
