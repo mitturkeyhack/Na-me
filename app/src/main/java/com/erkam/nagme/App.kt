@@ -27,6 +27,8 @@ class App : Application(), SingletonImageLoader.Factory {
     override fun onCreate() {
         super.onCreate()
         Store.init(this)
+        com.erkam.nagme.ui.C.accentState.value = androidx.compose.ui.graphics.Color(Store.settings.value.accent)
+        com.erkam.nagme.ui.C.amoledState.value = Store.settings.value.amoled
         Downloads.init(this)
         Yt.init()
         watchNetwork()

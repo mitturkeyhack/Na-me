@@ -103,6 +103,7 @@ object Downloads {
         part.renameTo(File(musicDir, "${song.id}.ses"))
         val thumb = saveThumb(song)
         Store.addDownload(song.copy(thumb = thumb))
+        Lyrics.prefetch(app, song)
     }
 
     private suspend fun coroutineScopeAll(jobs: List<suspend () -> Unit>) {

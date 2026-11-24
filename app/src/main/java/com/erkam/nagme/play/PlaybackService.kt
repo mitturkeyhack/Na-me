@@ -10,12 +10,14 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.database.StandaloneDatabaseProvider
+import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
@@ -33,6 +35,8 @@ import androidx.media3.session.SessionResult
 import com.erkam.nagme.MainActivity
 import com.erkam.nagme.R
 import com.erkam.nagme.data.Downloads
+import com.erkam.nagme.data.LONG_MS
+import com.erkam.nagme.data.Session
 import com.erkam.nagme.data.Song
 import com.erkam.nagme.data.Store
 import com.erkam.nagme.yt.Net
@@ -53,6 +57,7 @@ class PlaybackService : MediaSessionService() {
 
     companion object {
         const val CMD_SLEEP = "nagme.sleep" // args: "min" (Int). 0 = iptal, -1 = şarkı bitince
+        const val CMD_RADIO = "nagme.radio" // args: "on" (Boolean)
         private var cache: SimpleCache? = null
 
         @Synchronized
@@ -65,6 +70,37 @@ class PlaybackService : MediaSessionService() {
         }.also { cache = it }
 
         fun ytUri(id: String): Uri = Uri.parse(Yt.watchUrl(id))
+
+        /** Ses kaynağı: cihazdaysa dosya, değilse YouTube (çalarken çözülür, önbelleğe alınır). */
+        fun dataSourceFactory(ctx: Context): DataSource.Factory {
+            val resolver = ResolvingDataSource.Resolver { spec ->
+                val id = spec.key ?: Yt.idFromUrl(spec.uri.toString())
+                if (id == null || spec.uri.scheme == "file") spec
+                else spec.withUri(Uri.parse(Yt.streamUrlBlocking(id, Store.settings.value.highQuality)))
+            }
+            val http = OkHttpDataSource.Factory(Net.client)
+            val cached = CacheDataSource.Factory()
+                .setCache(cache(ctx))
+                .setUpstreamDataSourceFactory(ResolvingDataSource.Factory(http, resolver))
+                .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+            return DefaultDataSource.Factory(ctx.applicationContext, cached)
+        }
+
+        /** Çalınabilir öğe: cihazdaysa dosya, değilse YouTube. */
+        fun resolveItem(item: MediaItem): MediaItem {
+            val id = item.mediaId
+            val file = Downloads.fileFor(id)
+            val b = item.buildUpon()
+            if (file != null) {
+                b.setUri(Uri.fromFile(file))
+                Store.downloads.value.firstOrNull { it.id == id }?.thumb?.takeIf { it.startsWith("file:") }?.let {
+                    b.setMediaMetadata(item.mediaMetadata.buildUpon().setArtworkUri(Uri.parse(it)).build())
+                }
+            } else {
+                b.setUri(ytUri(id)).setCustomCacheKey(id)
+            }
+            return b.build()
+        }
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -77,22 +113,17 @@ class PlaybackService : MediaSessionService() {
     private var loadingMore = false
     private var sleepJob: Job? = null
     private val retried = HashSet<String>()
+    private var radioMode = false
+
+    // Özet için dinleme süresi
+    private var listenItem: Song? = null
+    private var listenMs = 0L
+    private var playingSince = 0L
 
     override fun onCreate() {
         super.onCreate()
 
-        // Ses bağlantısı çalma anında çözülür; çalınan şarkılar önbelleğe alınır (tekrar dinlemede anında açılır)
-        val resolver = ResolvingDataSource.Resolver { spec ->
-            val id = spec.key ?: Yt.idFromUrl(spec.uri.toString())
-            if (id == null || spec.uri.scheme == "file") spec
-            else spec.withUri(Uri.parse(Yt.streamUrlBlocking(id, Store.settings.value.highQuality)))
-        }
-        val http = OkHttpDataSource.Factory(Net.client)
-        val cached = CacheDataSource.Factory()
-            .setCache(cache(this))
-            .setUpstreamDataSourceFactory(ResolvingDataSource.Factory(http, resolver))
-            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
-        val dataSource = DefaultDataSource.Factory(this, cached)
+        val dataSource = dataSourceFactory(this)
 
         player = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSource))
@@ -124,30 +155,18 @@ class PlaybackService : MediaSessionService() {
 
         registerHeadsetCallback()
         startFadeLoop()
+        startSaveLoop()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
-    /** Sıradaki öğeye çalınabilir bağlantı ekler: cihazdaysa dosya, değilse YouTube. */
-    private fun resolve(item: MediaItem): MediaItem {
-        val id = item.mediaId
-        val file = Downloads.fileFor(id)
-        val b = item.buildUpon()
-        if (file != null) {
-            b.setUri(Uri.fromFile(file))
-            Store.downloads.value.firstOrNull { it.id == id }?.thumb?.takeIf { it.startsWith("file:") }?.let {
-                b.setMediaMetadata(item.mediaMetadata.buildUpon().setArtworkUri(Uri.parse(it)).build())
-            }
-        } else {
-            b.setUri(ytUri(id)).setCustomCacheKey(id)
-        }
-        return b.build()
-    }
+    private fun resolve(item: MediaItem) = resolveItem(item)
 
     private val callback = object : MediaSession.Callback {
         override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
             val cmds = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon()
                 .add(SessionCommand(CMD_SLEEP, Bundle.EMPTY))
+                .add(SessionCommand(CMD_RADIO, Bundle.EMPTY))
                 .build()
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                 .setAvailableSessionCommands(cmds)
@@ -161,13 +180,30 @@ class PlaybackService : MediaSessionService() {
         ): ListenableFuture<MutableList<MediaItem>> =
             Futures.immediateFuture(mediaItems.map { resolve(it) }.toMutableList())
 
+        override fun onPlaybackResumption(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            isForPlayback: Boolean
+        ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+            val se = Store.session.value
+                ?: return Futures.immediateFailedFuture(UnsupportedOperationException())
+            return Futures.immediateFuture(
+                MediaSession.MediaItemsWithStartPosition(
+                    se.queue.map { resolve(it.toMediaItem()) }, se.index.coerceIn(0, (se.queue.size - 1).coerceAtLeast(0)), se.position
+                )
+            )
+        }
+
         override fun onCustomCommand(
             session: MediaSession,
             controller: MediaSession.ControllerInfo,
             customCommand: SessionCommand,
             args: Bundle
         ): ListenableFuture<SessionResult> {
-            if (customCommand.customAction == CMD_SLEEP) setSleep(args.getInt("min", 0))
+            when (customCommand.customAction) {
+                CMD_SLEEP -> setSleep(args.getInt("min", 0))
+                CMD_RADIO -> { radioMode = args.getBoolean("on"); if (radioMode) maybeLoadMore() }
+            }
             return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
         }
     }
@@ -189,8 +225,18 @@ class PlaybackService : MediaSessionService() {
 
     private val listener = object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            flushListen()
             mediaItem ?: return
-            Store.addHistory(Song.from(mediaItem))
+            val song = Song.from(mediaItem)
+            listenItem = song
+            if (player.isPlaying) playingSince = SystemClock.elapsedRealtime()
+            Store.addHistory(song)
+            // Uzun kayıt: kaldığın yerden devam
+            Store.resumeFor(song.id)?.let { r ->
+                if (player.currentPosition < 5_000) player.seekTo(r.position)
+            }
+            applySpeed()
+            saveState()
             fadeInActive = reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && Store.settings.value.crossfade > 0
             if (!fadeInActive) player.volume = 1f
             maybeLoadMore()
@@ -224,12 +270,19 @@ class PlaybackService : MediaSessionService() {
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             if (isPlaying) retried.clear()
+            accrue()
+            playingSince = if (isPlaying) SystemClock.elapsedRealtime() else 0L
+            if (!isPlaying) saveState()
+        }
+
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            if (playbackState == Player.STATE_READY) applySpeed()
         }
     }
 
     /** Sıra bitmek üzereyse benzer şarkılarla devam et (radyo). */
     private fun maybeLoadMore() {
-        if (!Store.settings.value.autoplay || loadingMore) return
+        if ((!Store.settings.value.autoplay && !radioMode) || loadingMore) return
         if (player.repeatMode != Player.REPEAT_MODE_OFF) return
         if (player.currentMediaItemIndex < player.mediaItemCount - 2) return
         val current = player.currentMediaItem?.mediaId ?: return
@@ -246,6 +299,55 @@ class PlaybackService : MediaSessionService() {
                 player.addMediaItems(more.map { resolve(it.toMediaItem()) })
             }
             loadingMore = false
+        }
+    }
+
+    private fun accrue() {
+        if (playingSince > 0) {
+            val now = SystemClock.elapsedRealtime()
+            listenMs += now - playingSince
+            playingSince = now
+        }
+    }
+
+    private fun flushListen() {
+        accrue()
+        listenItem?.let { Store.addPlay(it, listenMs) }
+        listenItem = null
+        listenMs = 0
+        playingSince = 0
+    }
+
+    /** Uzun kayıtlarda (podcast, sohbet) seçilen hız; şarkılarda her zaman 1x. */
+    private fun applySpeed() {
+        val d = player.duration
+        val long = (d != C.TIME_UNSET && d >= LONG_MS) ||
+            (player.currentMediaItem?.mediaMetadata?.extras?.getLong("dur") ?: 0) * 1000 >= LONG_MS
+        val speed = if (long) Store.settings.value.longSpeed else 1f
+        if (player.playbackParameters.speed != speed) player.setPlaybackSpeed(speed)
+    }
+
+    /** Kalınan yeri kaydet: uygulama kapansa da sonra devam edilir. */
+    private fun saveState() {
+        val n = player.mediaItemCount
+        if (n == 0) return
+        val idx = player.currentMediaItemIndex
+        val from = (idx - 50).coerceAtLeast(0)
+        val to = (idx + 150).coerceAtMost(n)
+        val q = (from until to).map { Song.from(player.getMediaItemAt(it)) }
+        Store.saveSession(Session(q, idx - from, player.currentPosition))
+        player.currentMediaItem?.let { Store.setResume(Song.from(it), player.currentPosition, player.duration) }
+    }
+
+    private fun startSaveLoop() {
+        scope.launch {
+            while (isActive) {
+                delay(10_000)
+                if (player.isPlaying) saveState()
+            }
+        }
+        scope.launch {
+            Store.settings.collect { applySpeed() }
         }
     }
 
@@ -308,6 +410,8 @@ class PlaybackService : MediaSessionService() {
 
     override fun onDestroy() {
         runCatching { getSystemService(AudioManager::class.java).unregisterAudioDeviceCallback(headsetCallback) }
+        flushListen()
+        saveState()
         bubble.stop()
         scope.cancel()
         session?.run {

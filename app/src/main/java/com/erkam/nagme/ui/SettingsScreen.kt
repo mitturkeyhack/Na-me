@@ -4,6 +4,7 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -87,10 +88,12 @@ fun SettingsScreen(vm: MainViewModel) {
             Box(Modifier.size(60.dp).clip(CircleShape).background(C.Accent), contentAlignment = Alignment.Center) {
                 Ic(R.drawable.ic_person, null, tint = C.OnAccent, size = 32.dp)
             }
-            Column(Modifier.padding(start = 16.dp)) {
+            Column(Modifier.padding(start = 16.dp).weight(1f)) {
                 Text("Dinleyici", style = T.H2)
                 Text("${liked.size} beğeni · ${downloads.size} cihazda · ${history.size} dinleme", style = T.Small, color = C.Muted)
             }
+            Box(Modifier.clip(RoundedCornerShape(14.dp)).background(C.Accent).clickable { vm.showSettings.value = false; vm.showSummary.value = true }
+                .padding(horizontal = 12.dp, vertical = 8.dp)) { Text("Özetim", style = T.Small, color = C.OnAccent) }
         }
 
         Group("Çalma")
@@ -111,6 +114,29 @@ fun SettingsScreen(vm: MainViewModel) {
         }
 
         Group("Görünüm")
+        Label("Tema rengi", "Düğmeler, çalan şarkı, tını çubukları ve yüzen simge bu renkte olur")
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+            THEME_COLORS.forEach { (name, argb) ->
+                val sel = s.accent == argb
+                Column(
+                    Modifier.clip(RoundedCornerShape(12.dp)).clickable { Store.updateSettings { it.copy(accent = argb) } }.padding(4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Box(
+                        Modifier.size(46.dp).clip(CircleShape).background(Color(argb))
+                            .then(if (sel) Modifier.border(3.dp, Color.White, CircleShape) else Modifier),
+                        contentAlignment = Alignment.Center
+                    ) { if (sel) Ic(R.drawable.ic_check_circle, "Seçili", tint = C.OnAccent, size = 22.dp) }
+                    Spacer(Modifier.height(6.dp))
+                    Text(name, style = T.Small, color = if (sel) Color.White else C.Muted)
+                }
+            }
+        }
+        Label("Arka plan", "Simsiyah, A35 gibi AMOLED ekranlarda pil harcamaz")
+        Row(Modifier.padding(horizontal = 20.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Pill("Koyu", !s.amoled) { Store.updateSettings { it.copy(amoled = false) } }
+            Pill("Simsiyah", s.amoled) { Store.updateSettings { it.copy(amoled = true) } }
+        }
         Toggle(
             "Yüzen simge",
             if (s.bubble && !canOverlay) "İzin gerekli: dokun ve \"Diğer uygulamaların üzerinde göster\"i aç"

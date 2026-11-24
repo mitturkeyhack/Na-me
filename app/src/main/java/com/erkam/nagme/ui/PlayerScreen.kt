@@ -38,6 +38,16 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.zIndex
+import com.erkam.nagme.data.Song
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -77,19 +87,7 @@ fun PlayerScreen(vm: MainViewModel) {
     val sleepUntil by vm.sleepUntil.collectAsState()
     val ctx = LocalContext.current
 
-    var base by remember { mutableStateOf(Color(0xFF14211F)) }
-    LaunchedEffect(song?.thumb) {
-        val t = song?.thumb ?: return@LaunchedEffect
-        if (t.isEmpty()) return@LaunchedEffect
-        val r = SingletonImageLoader.get(ctx).execute(
-            ImageRequest.Builder(ctx).data(t).size(128).allowHardware(false).build()
-        )
-        if (r is SuccessResult) {
-            val p = withContext(Dispatchers.Default) { Palette.from(r.image.toBitmap()).generate() }
-            val c = p.darkVibrantSwatch?.rgb ?: p.darkMutedSwatch?.rgb ?: p.dominantSwatch?.rgb
-            if (c != null) base = lerp(Color(c), Color(0xFF0F0F12), 0.45f)
-        }
-    }
+    val base = rememberCoverTint(song?.thumb)
     val bg by animateColorAsState(base, tween(600), label = "bg")
 
     var showQueue by remember { mutableStateOf(false) }
@@ -176,17 +174,40 @@ fun PlayerScreen(vm: MainViewModel) {
         }
 
         Spacer(Modifier.weight(0.6f))
+        // Hız: sadece uzun kayıtlarda (podcast, sohbet)
+        if (dur >= com.erkam.nagme.data.LONG_MS) {
+            val speed by remember { Store.settings }.collectAsState()
+            Row(
+                Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Hız", style = T.Small, color = Color(0xFFCBD0D4))
+                listOf(0.75f, 1f, 1.25f, 1.5f, 2f).forEach { v ->
+                    val sel = speed.longSpeed == v
+                    Box(
+                        Modifier.height(32.dp).clip(RoundedCornerShape(16.dp))
+                            .background(if (sel) Color.White else Color(0x33000000))
+                            .clickable { vm.setLongSpeed(v) }.padding(horizontal = 11.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(speedLabel(v), style = T.Small, color = if (sel) Color(0xFF14211F) else Color.White)
+                    }
+                }
+            }
+        }
         Row(Modifier.fillMaxWidth().padding(bottom = 16.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             BottomAction("Sıradakiler", R.drawable.ic_queue, Modifier.weight(1f)) { showQueue = true }
+            BottomAction("Sözler", R.drawable.ic_lyrics, Modifier.weight(1f)) { vm.showLyrics.value = true }
             val dl = s != null && downloads.any { it.id == s.id }
             val p = s?.let { progress[it.id] }
             BottomAction(
-                when { dl -> "Cihazda"; p != null -> "%${(p * 100).toInt()}"; else -> "Cihaza kaydet" },
+                when { dl -> "Cihazda"; p != null -> "%${(p * 100).toInt()}"; else -> "Kaydet" },
                 if (dl) R.drawable.ic_check_circle else R.drawable.ic_download,
                 Modifier.weight(1f), tint = if (dl) C.Accent else C.Text
             ) { if (s != null && !dl) Downloads.enqueue(s) }
             BottomAction(
-                when { sleepUntil == -1L -> "Şarkı bitince"; sleepUntil > 0 -> "${((sleepUntil - System.currentTimeMillis()) / 60000 + 1)} dk"; else -> "Uyku zamanlayıcı" },
+                when { sleepUntil == -1L -> "Şarkı sonu"; sleepUntil > 0 -> "${((sleepUntil - System.currentTimeMillis()) / 60000 + 1)} dk"; else -> "Uyku" },
                 R.drawable.ic_moon, Modifier.weight(1f), tint = if (sleepUntil != 0L) C.Accent else C.Text
             ) { showSleep = true }
         }
@@ -228,38 +249,131 @@ private fun BottomAction(text: String, icon: Int, modifier: Modifier, tint: Colo
     }
 }
 
+fun speedLabel(v: Float) = when (v) { 1f -> "1x"; 2f -> "2x"; else -> v.toString().replace('.', ',') + "x" }
+
+private class QItem(val uid: String, val song: Song)
+
+/** Sıradakiler: tutamaktan sürükle-bırak, sola kaydırıp çıkar */
 @Composable
 private fun QueueSheet(vm: MainViewModel, onDismiss: () -> Unit) {
     val queue by vm.queue.collectAsState()
     val index by vm.queueIndex.collectAsState()
     val playing by vm.isPlaying.collectAsState()
-    val state = rememberLazyListState(initialFirstVisibleItemIndex = index.coerceAtLeast(0))
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = C.Surface2) {
-        Text("Sıradakiler", style = T.H2, modifier = Modifier.padding(start = 20.dp, bottom = 8.dp))
+    val radio by vm.radioSeed.collectAsState()
+    val items = remember { mutableStateListOf<QItem>() }
+    var dragUid by remember { mutableStateOf<String?>(null) }
+    var dragFrom by remember { mutableIntStateOf(-1) }
+    var dragOffset by remember { mutableFloatStateOf(0f) }
+    val density = LocalDensity.current
+    val itemH = with(density) { 62.dp.toPx() }
+
+    LaunchedEffect(queue, index) {
+        if (dragUid == null) {
+            items.clear()
+            queue.forEachIndexed { i, s -> items.add(QItem("$i-${s.id}", s)) }
+        }
+    }
+    val state = rememberLazyListState(initialFirstVisibleItemIndex = (index - 1).coerceAtLeast(0))
+
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = C.Surface2, sheetGesturesEnabled = dragUid == null) {
+        Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Sıradakiler", style = T.H2, modifier = Modifier.weight(1f))
+            Text("${queue.size} şarkı", style = T.Small, color = C.Muted)
+        }
+        if (radio != null) {
+            Row(
+                Modifier.padding(horizontal = 20.dp, vertical = 6.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFF2A2A33))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Ic(R.drawable.ic_radio, null, tint = C.Accent, size = 18.dp)
+                Spacer(Modifier.width(8.dp))
+                Text("Radyo: ${radio!!.title}'na benzer şarkılar", style = T.Small, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        Text("Tutamaktan sürükle · sola kaydırıp çıkar", style = T.Small, color = C.Muted,
+            modifier = Modifier.padding(start = 20.dp, top = 4.dp, bottom = 6.dp))
         LazyColumn(state = state, modifier = Modifier.fillMaxWidth().height(520.dp)) {
-            itemsIndexed(queue, key = { i, s -> "$i-${s.id}" }) { i, s ->
-                val cur = i == index
-                Row(
-                    Modifier.fillMaxWidth().background(if (cur) Color(0x14FFFFFF) else Color.Transparent)
-                        .clickable { vm.skipTo(i) }.padding(horizontal = 16.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Cover(s, 46.dp)
-                        if (cur) {
-                            Box(Modifier.size(46.dp).clip(RoundedCornerShape(8.dp)).background(Color(0x99000000)))
-                            EqBars(playing)
+            itemsIndexed(items, key = { _, q -> q.uid }) { i, q ->
+                val dragged = q.uid == dragUid
+                val cur = q.uid == "$index-${queue.getOrNull(index)?.id}"
+                var swipe by remember(q.uid) { mutableFloatStateOf(0f) }
+                val rowMod = if (dragged) Modifier.zIndex(1f).graphicsLayer {
+                    translationY = dragOffset; shadowElevation = 24f; scaleX = 1.02f; scaleY = 1.02f
+                } else Modifier.animateItem()
+                Box(rowMod.fillMaxWidth().height(62.dp)) {
+                    if (swipe < -10f) {
+                        Row(Modifier.matchParentSize().background(Color(0xFF5A2A2A)).padding(end = 20.dp),
+                            horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Sıradan çıkar", style = T.Small, color = Color.White)
                         }
                     }
-                    Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                        Text(s.title, style = T.Title, color = if (cur) C.Accent else C.Text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(s.artist, style = T.Small, color = C.Muted, maxLines = 1)
+                    Row(
+                        Modifier.fillMaxSize()
+                            .graphicsLayer { translationX = swipe }
+                            .background(if (dragged) Color(0xFF2E2E38) else if (cur) Color(0xFF2A2A33) else C.Surface2)
+                            .clickable { val at = items.indexOfFirst { it.uid == q.uid }; if (at >= 0) vm.skipTo(at) }
+                            .pointerInput(q.uid, cur) {
+                                if (cur) return@pointerInput
+                                detectHorizontalDragGestures(
+                                    onDragEnd = {
+                                        if (swipe < -size.width * 0.35f) {
+                                            val at = items.indexOfFirst { it.uid == q.uid }
+                                            if (at >= 0) { items.removeAt(at); vm.removeFromQueue(at) }
+                                        }
+                                        swipe = 0f
+                                    },
+                                    onDragCancel = { swipe = 0f }
+                                ) { _, dx -> swipe = (swipe + dx).coerceAtMost(0f) }
+                            }
+                            .padding(start = 16.dp, end = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Cover(q.song, 46.dp)
+                            if (cur) {
+                                Box(Modifier.size(46.dp).clip(RoundedCornerShape(8.dp)).background(Color(0x99000000)))
+                                EqBars(playing)
+                            }
+                        }
+                        Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                            Text(q.song.title, style = T.Title, color = if (cur) C.Accent else Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(q.song.artist, style = T.Small, color = C.Muted, maxLines = 1)
+                        }
+                        Box(
+                            Modifier.size(44.dp).pointerInput(q.uid) {
+                                detectDragGestures(
+                                    onDragStart = {
+                                        dragUid = q.uid
+                                        dragFrom = items.indexOfFirst { it.uid == q.uid }
+                                        dragOffset = 0f
+                                    },
+                                    onDragEnd = {
+                                        val to = items.indexOfFirst { it.uid == dragUid }
+                                        if (dragFrom >= 0 && to >= 0 && to != dragFrom) vm.moveInQueue(dragFrom, to)
+                                        dragUid = null; dragFrom = -1; dragOffset = 0f
+                                    },
+                                    onDragCancel = { dragUid = null; dragFrom = -1; dragOffset = 0f }
+                                ) { change, amount ->
+                                    change.consume()
+                                    dragOffset += amount.y
+                                    var at = items.indexOfFirst { it.uid == dragUid }
+                                    while (dragOffset > itemH / 2 && at < items.lastIndex) {
+                                        items.add(at + 1, items.removeAt(at)); at++; dragOffset -= itemH
+                                    }
+                                    while (dragOffset < -itemH / 2 && at > 0) {
+                                        items.add(at - 1, items.removeAt(at)); at--; dragOffset += itemH
+                                    }
+                                }
+                            },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Ic(R.drawable.ic_grip, "Sürükleyerek taşı", tint = if (dragged) C.Accent else Color(0xFFC9C9D0), size = 22.dp)
+                        }
                     }
-                    if (!cur) IconBtn(R.drawable.ic_close, "Sıradan çıkar", { vm.removeFromQueue(i) }, tint = C.Muted, size = 18.dp, box = 40.dp)
                 }
             }
         }
         Spacer(Modifier.height(16.dp))
     }
 }
-

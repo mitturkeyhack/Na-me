@@ -50,6 +50,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
+import coil3.request.allowHardware
+import coil3.toBitmap
 import com.erkam.nagme.R
 import com.erkam.nagme.data.Downloads
 import com.erkam.nagme.data.Song
@@ -200,6 +202,7 @@ fun SongMenu(song: Song, vm: MainViewModel, playlistId: String? = null) {
                     onClick = { open = false; action() }
                 )
             }
+            item("Bu şarkının radyosu", R.drawable.ic_radio) { vm.startRadio(song) }
             item("Sıradaki olarak çal", R.drawable.ic_queue) { vm.playNext(song) }
             item("Sıraya ekle", R.drawable.ic_plus) { vm.addToQueue(song) }
             val isLiked = liked.any { it.id == song.id }
@@ -288,4 +291,25 @@ fun Avatar(size: Dp = 34.dp, onClick: () -> Unit) {
             Ic(R.drawable.ic_person, "Profil ve ayarlar", tint = C.OnAccent, size = size * 0.6f)
         }
     }
+}
+
+/** Kapak resminin koyu baskın rengi (oynatıcı ve söz ekranı arka planı için) */
+@Composable
+fun rememberCoverTint(thumb: String?, fallback: Color = Color(0xFF14211F), darken: Float = 0.45f): Color {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var c by remember { mutableStateOf(fallback) }
+    androidx.compose.runtime.LaunchedEffect(thumb) {
+        if (thumb.isNullOrEmpty()) return@LaunchedEffect
+        val r = coil3.SingletonImageLoader.get(ctx).execute(
+            coil3.request.ImageRequest.Builder(ctx).data(thumb).size(128).allowHardware(false).build()
+        )
+        if (r is coil3.request.SuccessResult) {
+            val p = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                androidx.palette.graphics.Palette.from(r.image.toBitmap()).generate()
+            }
+            val rgb = p.darkVibrantSwatch?.rgb ?: p.darkMutedSwatch?.rgb ?: p.dominantSwatch?.rgb
+            if (rgb != null) c = androidx.compose.ui.graphics.lerp(Color(rgb), Color(0xFF0F0F12), darken)
+        }
+    }
+    return c
 }

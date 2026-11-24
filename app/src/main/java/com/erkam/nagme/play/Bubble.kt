@@ -48,7 +48,7 @@ import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.sin
 
-private const val ACCENT = 0xFFF5B14C.toInt()
+private val ACCENT get() = com.erkam.nagme.data.Store.settings.value.accent.toInt()
 
 /** Müzik çalarken diğer uygulamaların üstünde duran, dönen plak gibi yüzen simge. */
 class Bubble(private val ctx: Context, private val player: Player) {

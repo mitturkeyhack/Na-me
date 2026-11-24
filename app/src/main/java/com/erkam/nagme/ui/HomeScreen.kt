@@ -50,6 +50,9 @@ fun HomeScreen(vm: MainViewModel, bottomPad: PaddingValues) {
     val playlists by Store.playlists.collectAsState()
     val current by vm.current.collectAsState()
     val playing by vm.isPlaying.collectAsState()
+    val session by Store.session.collectAsState()
+    val resumes by Store.resumes.collectAsState()
+    val plays by Store.plays.collectAsState()
 
     PullToRefreshBox(isRefreshing = loading, onRefresh = { vm.loadHome(force = true) }) {
         LazyColumn(contentPadding = bottomPad) {
@@ -94,6 +97,54 @@ fun HomeScreen(vm: MainViewModel, bottomPad: PaddingValues) {
                     item { SectionTitle("Cihazdakiler", "Karışık çal") { vm.play(downloads, shuffled = true) } }
                     itemsIndexed(downloads.take(30), key = { _, s -> "d" + s.id }) { i, s ->
                         SongRow(s, vm, onClick = { vm.play(downloads, i) }, showDownload = false)
+                    }
+                }
+            }
+
+            // Kaldığın yerden devam et (uygulama kapanmadan önce çalan)
+            val se = session
+            if (current == null && se != null && se.queue.isNotEmpty()) {
+                val s = se.queue[se.index.coerceIn(se.queue.indices)]
+                item {
+                    Column(
+                        Modifier.padding(horizontal = 16.dp, vertical = 8.dp).fillMaxWidth().clip(RoundedCornerShape(18.dp))
+                            .background(C.Surface).clickable { vm.restoreSession() }.padding(16.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Ic(R.drawable.ic_history, null, tint = C.Accent, size = 18.dp)
+                            Spacer(Modifier.width(8.dp))
+                            Text("KALDIĞIN YERDEN DEVAM ET", style = T.Small.copy(fontWeight = FontWeight.Bold), color = C.Accent)
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Cover(s, 60.dp, 10.dp)
+                            Column(Modifier.weight(1f).padding(horizontal = 14.dp)) {
+                                Text(s.title, style = T.Title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text("${s.artist} · ${com.erkam.nagme.data.formatTime(se.position / 1000)}'de kaldın",
+                                    style = T.Small, color = C.Muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                            Box(Modifier.size(50.dp).clip(androidx.compose.foundation.shape.CircleShape).background(C.Accent),
+                                contentAlignment = Alignment.Center) { Ic(R.drawable.ic_play, "Devam et", tint = C.OnAccent, size = 24.dp) }
+                        }
+                    }
+                }
+            }
+
+            // Nağme Özetim girişi
+            if (plays.isNotEmpty() && online) {
+                item {
+                    Row(
+                        Modifier.padding(horizontal = 16.dp, vertical = 6.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp))
+                            .background(C.Accent).clickable { vm.showSummary.value = true }.padding(horizontal = 16.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Ic(R.drawable.ic_chart, null, tint = C.OnAccent, size = 22.dp)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Nağme Özetim", style = T.Title, color = C.OnAccent)
+                            Text("Bu hafta neler dinledin? Bak, dinle, paylaş", style = T.Small, color = C.OnAccent)
+                        }
+                        Ic(R.drawable.ic_play, null, tint = C.OnAccent, size = 20.dp)
                     }
                 }
             }
@@ -143,6 +194,47 @@ fun HomeScreen(vm: MainViewModel, bottomPad: PaddingValues) {
                 }
                 itemsIndexed(forYou.take(20), key = { _, s -> "f" + s.id }) { i, s ->
                     SongRow(s, vm, onClick = { vm.play(forYou, i) })
+                }
+            }
+
+            // Yarım kalan uzun kayıtlar (podcast, sohbet, konser)
+            if (resumes.isNotEmpty() && mood == null) {
+                item { SectionTitle("Yarım kalan uzun kayıtlar") }
+                items(resumes.take(5), key = { "r" + it.song.id }) { r ->
+                    Row(
+                        Modifier.padding(horizontal = 16.dp, vertical = 5.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp))
+                            .background(Color(0xFF17171C)).clickable { vm.resumeLong(r) }.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Cover(r.song, 56.dp, 10.dp)
+                        Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                            Text(r.song.title, style = T.Title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Spacer(Modifier.height(6.dp))
+                            Box(Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)).background(Color(0xFF3A3A44))) {
+                                Box(Modifier.fillMaxWidth((r.position.toFloat() / r.duration).coerceIn(0f, 1f)).height(4.dp).background(C.Accent))
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            val left = (r.duration - r.position) / 60000
+                            Text("${com.erkam.nagme.data.formatTime(r.position / 1000)}'de kaldın · ${if (left >= 60) "${left / 60} sa ${left % 60} dk" else "$left dk"} kaldı",
+                                style = T.Small, color = C.Muted)
+                        }
+                        IconBtn(R.drawable.ic_close, "Listeden kaldır", { Store.removeResume(r.song.id) }, tint = C.Muted, size = 18.dp, box = 40.dp)
+                    }
+                }
+                item {
+                    val st by Store.settings.collectAsState()
+                    Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Text("Hız:", style = T.Small, color = C.Muted)
+                        listOf(0.75f, 1f, 1.25f, 1.5f, 2f).forEach { v ->
+                            Box(
+                                Modifier.height(32.dp).clip(RoundedCornerShape(16.dp))
+                                    .background(if (st.longSpeed == v) C.Text else C.Chip)
+                                    .clickable { vm.setLongSpeed(v) }.padding(horizontal = 11.dp),
+                                contentAlignment = Alignment.Center
+                            ) { Text(speedLabel(v), style = T.Small, color = if (st.longSpeed == v) C.Bg else C.Text) }
+                        }
+                    }
                 }
             }
 

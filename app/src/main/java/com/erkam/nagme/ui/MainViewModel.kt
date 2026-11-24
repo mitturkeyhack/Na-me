@@ -26,6 +26,8 @@ import kotlinx.coroutines.launch
 
 enum class Tab { Home, Search, Library }
 
+data class Msg(val text: String, val action: String? = null, val onAction: (() -> Unit)? = null)
+
 /** Açık olan liste ekranı */
 sealed interface Collection {
     data object Liked : Collection
@@ -54,7 +56,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val shuffle = MutableStateFlow(false)
     val repeat = MutableStateFlow(Player.REPEAT_MODE_OFF)
     val sleepUntil = MutableStateFlow(0L) // 0 = yok, -1 = şarkı bitince
-    val message = MutableStateFlow<String?>(null)
+    val message = MutableStateFlow<Msg?>(null)
+    val radioSeed = MutableStateFlow<Song?>(null)
+    val showLyrics = MutableStateFlow(false)
+    val showSummary = MutableStateFlow(false)
+    private var lastId: String? = null
+    val controllerReady = MutableStateFlow(false)
 
     // --- Ana sayfa ---
     val mood = MutableStateFlow<String?>(null)
@@ -82,6 +89,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         future.addListener({
             val c = runCatching { future.get() }.getOrNull() ?: return@addListener
             controller = c
+            controllerReady.value = true
             c.addListener(object : Player.Listener {
                 override fun onEvents(player: Player, events: Player.Events) = sync()
             })
@@ -112,13 +120,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val d = c.duration
         duration.value = if (d > 0) d else (current.value?.duration ?: 0) * 1000
         position.value = c.currentPosition
+        val id = current.value?.id
+        if (id != null && id != lastId) {
+            lastId = id
+            Store.resumeFor(id)?.let { r ->
+                if (r.position > 30_000) message.value = Msg(
+                    "Kaldığın yerden devam ediliyor · ${com.erkam.nagme.data.formatTime(r.position / 1000)}", "Baştan"
+                ) { controller?.seekTo(0) }
+            }
+        }
         if (sleepUntil.value > 0 && System.currentTimeMillis() > sleepUntil.value) sleepUntil.value = 0
     }
 
     // --- Oynatma ---
     fun play(list: List<Song>, index: Int = 0, shuffled: Boolean = false) {
-        val c = controller ?: run { message.value = "Oynatıcı hazırlanıyor, tekrar dene"; return }
+        val c = controller ?: run { message.value = Msg("Oynatıcı hazırlanıyor, tekrar dene"); return }
         if (list.isEmpty()) return
+        setRadio(false)
         c.shuffleModeEnabled = shuffled
         val start = if (shuffled) list.indices.random() else index.coerceIn(list.indices)
         c.setMediaItems(list.map { it.toMediaItem() }, start, 0)
@@ -133,14 +151,65 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val c = controller ?: return
         if (c.mediaItemCount == 0) return playSong(s)
         c.addMediaItem(c.currentMediaItemIndex + 1, s.toMediaItem())
-        message.value = "Sıradaki olarak eklendi"
+        message.value = Msg("Sıradaki olarak eklendi")
     }
 
     fun addToQueue(s: Song) {
         val c = controller ?: return
         if (c.mediaItemCount == 0) return playSong(s)
         c.addMediaItem(s.toMediaItem())
-        message.value = "Sıraya eklendi"
+        message.value = Msg("Sıraya eklendi")
+    }
+
+    private fun setRadio(on: Boolean) {
+        if (!on) radioSeed.value = null
+        controller?.sendCustomCommand(SessionCommand(PlaybackService.CMD_RADIO, Bundle.EMPTY), Bundle().apply { putBoolean("on", on) })
+    }
+
+    /** Bu şarkının radyosu: şarkı + benzerleri, sıra bitince yenileri eklenir. */
+    fun startRadio(s: Song) {
+        val c = controller ?: return
+        play(listOf(s))
+        radioSeed.value = s
+        setRadio(true)
+        message.value = Msg("Radyo: ${s.title} ve benzerleri")
+        viewModelScope.launch {
+            val more = runCatching { Yt.related(s.id) }.getOrDefault(emptyList())
+                .distinctBy { it.title.lowercase() }.take(15)
+            if (c.currentMediaItem?.mediaId == s.id && c.mediaItemCount <= 1) c.addMediaItems(more.map { it.toMediaItem() })
+        }
+    }
+
+    /** Uygulama kapanmadan önce kalınan yer */
+    fun restoreSession() {
+        val c = controller ?: return
+        val se = Store.session.value ?: return
+        if (se.queue.isEmpty()) return
+        setRadio(false)
+        c.setMediaItems(se.queue.map { it.toMediaItem() }, se.index.coerceIn(se.queue.indices), se.position)
+        c.prepare()
+        c.play()
+    }
+
+    fun resumeLong(r: com.erkam.nagme.data.Resume) {
+        val c = controller ?: return
+        setRadio(false)
+        c.setMediaItems(listOf(r.song.toMediaItem()), 0, r.position)
+        c.prepare()
+        c.play()
+    }
+
+    fun setLongSpeed(v: Float) = Store.updateSettings { it.copy(longSpeed = v) }
+
+    /** Özet açılınca çalan şarkıyı durdur, kapanınca devam et */
+    private var pausedForSummary = false
+    fun pauseForSummary() {
+        val c = controller ?: return
+        if (c.isPlaying) { c.pause(); pausedForSummary = true }
+    }
+    fun resumeAfterSummary() {
+        if (pausedForSummary) controller?.play()
+        pausedForSummary = false
     }
 
     fun toggle() {
@@ -150,6 +219,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             c.play()
         }
     }
+
+    /** Anlık konum (sözlerin kelime kelime akması için) */
+    fun livePosition(): Long = controller?.currentPosition ?: position.value
 
     fun next() = controller?.seekToNext()
     fun prev() = controller?.seekToPrevious()
@@ -178,11 +250,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             min == -1 -> -1
             else -> 0
         }
-        message.value = when {
+        message.value = Msg(when {
             min > 0 -> "$min dakika sonra duracak"
             min == -1 -> "Bu şarkı bitince duracak"
             else -> "Uyku zamanlayıcı kapatıldı"
-        }
+        })
     }
 
     // --- Ana sayfa: dinlediklerine göre öneriler ---

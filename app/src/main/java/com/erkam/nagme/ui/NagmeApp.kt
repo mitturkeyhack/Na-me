@@ -54,12 +54,19 @@ fun NagmeApp(vm: MainViewModel) {
     val msg by vm.message.collectAsState()
     val snack = remember { SnackbarHostState() }
 
+    val showLyrics by vm.showLyrics.collectAsState()
+    val showSummary by vm.showSummary.collectAsState()
     LaunchedEffect(msg) {
-        msg?.let { snack.showSnackbar(it); vm.message.value = null }
+        val m = msg ?: return@LaunchedEffect
+        vm.message.value = null
+        val r = snack.showSnackbar(m.text, actionLabel = m.action, duration = androidx.compose.material3.SnackbarDuration.Short)
+        if (r == androidx.compose.material3.SnackbarResult.ActionPerformed) m.onAction?.invoke()
     }
 
-    BackHandler(showPlayer || showSettings || col != null || tab != Tab.Home) {
+    BackHandler(showPlayer || showSettings || col != null || tab != Tab.Home || showLyrics || showSummary) {
         when {
+            showSummary -> vm.showSummary.value = false
+            showLyrics -> vm.showLyrics.value = false
             showPlayer -> vm.showPlayer.value = false
             showSettings -> vm.showSettings.value = false
             col != null -> vm.openCollection.value = null
@@ -92,7 +99,12 @@ fun NagmeApp(vm: MainViewModel) {
                 BottomBar(tab) { vm.openCollection.value = null; vm.tab.value = it }
             }
 
-            SnackbarHost(snack, Modifier.align(Alignment.BottomCenter).padding(bottom = 160.dp))
+            SnackbarHost(snack, Modifier.align(Alignment.BottomCenter).padding(bottom = 160.dp)) { d ->
+                androidx.compose.material3.Snackbar(
+                    d, containerColor = Color(0xFF2E2E38), contentColor = Color.White, actionColor = C.Accent,
+                    shape = RoundedCornerShape(14.dp)
+                )
+            }
 
             AnimatedVisibility(
                 showSettings,
@@ -108,6 +120,16 @@ fun NagmeApp(vm: MainViewModel) {
                 Box(Modifier.pointerInput(Unit) {
                     detectVerticalDragGestures { _, drag -> if (drag > 40) vm.showPlayer.value = false }
                 }) { PlayerScreen(vm) }
+            }
+
+            AnimatedVisibility(
+                showLyrics && current != null,
+                enter = slideInVertically(tween(260)) { it } + fadeIn(),
+                exit = slideOutVertically(tween(220)) { it } + fadeOut()
+            ) { LyricsScreen(vm) }
+
+            AnimatedVisibility(showSummary, enter = fadeIn(tween(250)), exit = fadeOut(tween(200))) {
+                SummaryScreen(vm)
             }
 
             AddToPlaylistDialog()
